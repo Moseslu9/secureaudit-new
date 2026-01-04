@@ -23,7 +23,7 @@ export default function AuthPage() {
     <div className="min-h-screen bg-gray-900 flex items-center justify-center px-4">
       <div className="w-full max-w-md">
         <h1 className="text-4xl font-bold text-center text-cyan-500 mb-8">
-          Welcome to SecureAudit
+          SecureAudit
         </h1>
         <div className="bg-gray-800 p-8 rounded-xl border border-gray-700">
           <Auth
