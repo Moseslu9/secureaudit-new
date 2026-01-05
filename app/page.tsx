@@ -15,6 +15,7 @@ export default function Home() {
               <span className="text-xl font-bold">SecureAudit</span>
             </div>
             <div className="flex items-center space-x-6">
+              <Link href="/pricing" className="text-gray-300 hover:text-white transition">Pricing</Link>
               <Link href="#features" className="text-gray-300 hover:text-white transition">Features</Link>
               <Button asChild className="bg-cyan-500 hover:bg-cyan-600 text-gray-900 font-semibold">
                 <Link href="/auth">Get Started</Link>
@@ -35,8 +36,8 @@ export default function Home() {
             SecureAudit uses AI to scan your policies, tools, and setups — then shows you exactly what’s missing for SOC 2, ISO 27001, and more. Built for startups and small teams who can’t afford $20K+ audits.
           </p>
           <Button size="lg" asChild className="bg-cyan-500 hover:bg-cyan-600 text-gray-900 font-bold">
-            <Link href="/auth">Start Now</Link>
-          </Button>
+  <Link href="/auth?trial=true">Start Free Trial</Link>
+</Button>
         </div>
       </section>
 

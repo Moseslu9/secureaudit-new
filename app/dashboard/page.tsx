@@ -25,8 +25,12 @@ export default function Dashboard() {
   }, [router]);
 
   const fetchFiles = async () => {
-    const { data } = await supabase.storage.from("policies").list(user?.id);
-    setFiles(data || []);
+    const { data, error } = await supabase.storage.from("policies").list(user?.id);
+    if (error) {
+      console.error("Error fetching files:", error);
+    } else {
+      setFiles(data || []);
+    }
   };
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -35,7 +39,7 @@ export default function Dashboard() {
 
     setUploading(true);
     const fileExt = file.name.split(".").pop();
-    const fileName = `${Math.random().toString(36).substring(2)}.${fileExt}`;
+    const fileName = `${Date.now()}.${fileExt}`;
 
     const { error } = await supabase.storage
       .from("policies")
@@ -71,6 +75,37 @@ export default function Dashboard() {
     `);
   };
 
+  const downloadFile = async (fileName: string) => {
+    const { data, error } = await supabase.storage
+      .from("policies")
+      .download(`${user?.id}/${fileName}`);
+
+    if (error) {
+      alert("Download failed: " + error.message);
+    } else if (data) {
+      const url = URL.createObjectURL(data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+  };
+
+  const deleteFile = async (fileName: string) => {
+    if (!confirm("Delete this file?")) return;
+
+    const { error } = await supabase.storage
+      .from("policies")
+      .remove([`${user?.id}/${fileName}`]);
+
+    if (error) {
+      alert("Delete failed: " + error.message);
+    } else {
+      fetchFiles();
+    }
+  };
+
   const handleSignOut = async () => {
     await supabase.auth.signOut();
     router.push("/auth");
@@ -80,10 +115,10 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen bg-gray-900 p-8">
-      <div className="max-w-4xl mx-auto">
+      <div className="max-w-5xl mx-auto">
         <div className="flex justify-between items-center mb-10">
           <h1 className="text-3xl font-bold text-cyan-500">SecureAudit Dashboard</h1>
-          <Button onClick={handleSignOut} variant="outline" className="border-red-500 text-red-500">
+          <Button onClick={handleSignOut} variant="outline" className="border-red-500 text-red-500 hover:bg-red-500 hover:text-white">
             Sign Out
           </Button>
         </div>
@@ -94,36 +129,55 @@ export default function Dashboard() {
           </h2>
           <div className="mt-6">
             <label className="block">
-              <span className="text-white mb-2 block">Upload Policy Document</span>
+              <span className="text-white mb-2 block text-lg">Upload Policy Document</span>
               <input
                 type="file"
                 accept=".pdf,.docx,.txt"
                 onChange={handleUpload}
                 disabled={uploading}
-                className="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-cyan-500 file:text-gray-900 hover:file:bg-cyan-600"
+                className="block w-full text-sm text-gray-400 file:mr-4 file:py-3 file:px-6 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-cyan-500 file:text-gray-900 hover:file:bg-cyan-600"
               />
             </label>
-            {uploading && <p className="text-cyan-400 mt-4">Uploading...</p>}
+            {uploading && <p className="text-cyan-400 mt-4 text-lg">Uploading and analyzing...</p>}
           </div>
         </Card>
 
         {analysis && (
           <Card className="p-8 bg-gray-800 border-gray-700 mb-8">
-            <h3 className="text-xl font-bold mb-4">Compliance Gap Analysis</h3>
-            <p className="text-gray-300 whitespace-pre-wrap">{analysis}</p>
+            <h3 className="text-2xl font-bold mb-6 text-cyan-400">Compliance Gap Analysis</h3>
+            <p className="text-gray-300 text-lg whitespace-pre-wrap leading-relaxed">{analysis}</p>
           </Card>
         )}
 
         {files.length > 0 && (
           <Card className="p-8 bg-gray-800 border-gray-700">
-            <h3 className="text-xl font-bold mb-4">Uploaded Files</h3>
-            <ul className="space-y-2">
+            <h3 className="text-2xl font-bold mb-6 text-cyan-400">Upload History</h3>
+            <div className="space-y-4">
               {files.map((file) => (
-                <li key={file.name} className="text-gray-300">
-                  {file.name}
-                </li>
+                <div key={file.name} className="flex items-center justify-between bg-gray-900 p-4 rounded-lg border border-gray-700">
+                  <div>
+                    <p className="text-white font-medium">{file.name}</p>
+                    <p className="text-gray-500 text-sm">Uploaded {new Date(file.created_at).toLocaleDateString()}</p>
+                  </div>
+                  <div className="flex gap-3">
+                    <Button
+                      onClick={() => downloadFile(file.name)}
+                      variant="outline"
+                      className="border-cyan-500 text-cyan-500 hover:bg-cyan-500 hover:text-gray-900"
+                    >
+                      Download
+                    </Button>
+                    <Button
+                      onClick={() => deleteFile(file.name)}
+                      variant="outline"
+                      className="border-red-500 text-red-500 hover:bg-red-500 hover:text-white"
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                </div>
               ))}
-            </ul>
+            </div>
           </Card>
         )}
       </div>
