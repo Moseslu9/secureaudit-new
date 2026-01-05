@@ -12,18 +12,21 @@ export default function Dashboard() {
   const [files, setFiles] = useState<any[]>([]);
   const [uploading, setUploading] = useState(false);
   const [analysis, setAnalysis] = useState<string>("");
+  const [uploadCount, setUploadCount] = useState<number>(0);
+  const maxFreeUploads = 3;
 
   useEffect(() => {
-    const getUserAndFiles = async () => {
+    const getUserAndData = async () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
         router.push("/auth");
         return;
       }
       setUser(user);
-      fetchFiles(user.id);
+      await fetchFiles(user.id);
+      await fetchUploadCount(user.id);
     };
-    getUserAndFiles();
+    getUserAndData();
   }, [router]);
 
   const fetchFiles = async (userId: string) => {
@@ -42,9 +45,41 @@ export default function Dashboard() {
     }
   };
 
+  const fetchUploadCount = async (userId: string) => {
+    const { data, error } = await supabase
+      .from("user_upload_count")
+      .select("upload_count")
+      .eq("user_id", userId)
+      .single();
+
+    if (error && error.code === "PGRST116") {
+      // No row yet — create one
+      await supabase.from("user_upload_count").insert({ user_id: userId, upload_count: 0 });
+      setUploadCount(0);
+    } else if (error) {
+      console.error("Error fetching count:", error);
+    } else {
+      setUploadCount(data.upload_count);
+    }
+  };
+
+  const incrementUploadCount = async () => {
+    const newCount = uploadCount + 1;
+    const { error } = await supabase
+      .from("user_upload_count")
+      .upsert({ user_id: user.id, upload_count: newCount });
+
+    if (!error) setUploadCount(newCount);
+  };
+
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !user) return;
+
+    if (uploadCount >= maxFreeUploads) {
+      alert(`Free plan limit reached: ${maxFreeUploads} uploads. Upgrade to Pro for unlimited!`);
+      return;
+    }
 
     setUploading(true);
     const fileExt = file.name.split(".").pop();
@@ -57,7 +92,8 @@ export default function Dashboard() {
     if (error) {
       alert("Upload failed: " + error.message);
     } else {
-      fetchFiles(user.id);
+      await incrementUploadCount();
+      await fetchFiles(user.id);
       analyzeFile(file);
     }
     setUploading(false);
@@ -102,7 +138,7 @@ export default function Dashboard() {
   };
 
   const deleteFile = async (fileName: string) => {
-    if (!confirm("Are you sure you want to delete this file?")) return;
+    if (!confirm("Delete this file?")) return;
 
     const { error } = await supabase.storage
       .from("policies")
@@ -121,6 +157,8 @@ export default function Dashboard() {
   };
 
   if (!user) return null;
+
+  const remainingUploads = maxFreeUploads - uploadCount;
 
   return (
     <div className="min-h-screen bg-gray-900 p-8">
@@ -142,20 +180,25 @@ export default function Dashboard() {
           </h2>
 
           <div className="mt-6">
+            <p className="text-lg text-gray-300 mb-4">
+              Free plan: <span className="font-bold text-cyan-400">{remainingUploads}</span> uploads remaining
+            </p>
+
             <label className="block">
               <span className="text-white mb-2 block text-lg">Upload Policy Document</span>
               <input
                 type="file"
                 accept=".pdf,.docx,.txt"
                 onChange={handleUpload}
-                disabled={uploading}
-                className="block w-full text-sm text-gray-400 file:mr-4 file:py-3 file:px-6 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-cyan-500 file:text-gray-900 hover:file:bg-cyan-600"
+                disabled={uploading || remainingUploads <= 0}
+                className="block w-full text-sm text-gray-400 file:mr-4 file:py-3 file:px-6 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-cyan-500 file:text-gray-900 hover:file:bg-cyan-600 disabled:opacity-50"
               />
             </label>
             {uploading && <p className="text-cyan-400 mt-4 text-lg">Uploading and analyzing...</p>}
           </div>
         </Card>
 
+        {/* Rest of the component (analysis, history) stays the same as before */}
         {analysis && (
           <Card className="p-8 bg-gray-800 border-gray-700 mb-8">
             <h3 className="text-2xl font-bold mb-6 text-cyan-400">Compliance Gap Analysis</h3>
