@@ -12,7 +12,6 @@ export default function Dashboard() {
   const [files, setFiles] = useState<any[]>([]);
   const [uploading, setUploading] = useState(false);
   const [analysis, setAnalysis] = useState<string>("");
-  const [uploadCount, setUploadCount] = useState<number>(0);
   const maxFreeUploads = 3;
 
   useEffect(() => {
@@ -23,20 +22,22 @@ export default function Dashboard() {
         return;
       }
       setUser(user);
-      await fetchFiles(user.id);
-      await fetchUploadCount(user.id);
+      await loadEverything(user.id);
     };
     getUserAndData();
   }, [router]);
 
+  const loadEverything = async (userId: string) => {
+    await Promise.all([
+      fetchFiles(userId),
+      fetchUploadCount(userId)
+    ]);
+  };
+
   const fetchFiles = async (userId: string) => {
     const { data, error } = await supabase.storage
       .from("policies")
-      .list(userId, {
-        limit: 100,
-        offset: 0,
-        sortBy: { column: "created_at", order: "desc" },
-      });
+      .list(userId);
 
     if (error) {
       console.error("Error fetching files:", error);
@@ -46,37 +47,30 @@ export default function Dashboard() {
   };
 
   const fetchUploadCount = async (userId: string) => {
-    const { data, error } = await supabase
+    const { count, error } = await supabase
       .from("user_upload_count")
-      .select("upload_count")
-      .eq("user_id", userId)
-      .single();
+      .select("*", { count: "exact", head: true })
+      .eq("user_id", userId);
 
-    if (error && error.code === "PGRST116") {
-      // No row yet — create one
-      await supabase.from("user_upload_count").insert({ user_id: userId, upload_count: 0 });
-      setUploadCount(0);
-    } else if (error) {
-      console.error("Error fetching count:", error);
-    } else {
-      setUploadCount(data.upload_count);
+    if (error) {
+      console.error("Error counting uploads:", error);
+      return;
     }
-  };
 
-  const incrementUploadCount = async () => {
-    const newCount = uploadCount + 1;
-    const { error } = await supabase
-      .from("user_upload_count")
-      .upsert({ user_id: user.id, upload_count: newCount });
-
-    if (!error) setUploadCount(newCount);
+    const currentCount = count || 0;
+    if (currentCount === 0) {
+      // Create row if not exists
+      await supabase.from("user_upload_count").insert({ user_id: userId });
+    }
+    setUploadCount(currentCount);
   };
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !user) return;
 
-    if (uploadCount >= maxFreeUploads) {
+    const currentCount = files.length;
+    if (currentCount >= maxFreeUploads) {
       alert(`Free plan limit reached: ${maxFreeUploads} uploads. Upgrade to Pro for unlimited!`);
       return;
     }
@@ -92,8 +86,9 @@ export default function Dashboard() {
     if (error) {
       alert("Upload failed: " + error.message);
     } else {
-      await incrementUploadCount();
-      await fetchFiles(user.id);
+      // Optimistically update
+      setFiles(prev => [ { name: fileName, created_at: new Date().toISOString() }, ...prev ]);
+      setUploadCount(prev => prev + 1);
       analyzeFile(file);
     }
     setUploading(false);
@@ -111,8 +106,8 @@ export default function Dashboard() {
       { term: "employee training", found: lowerText.includes("training") || lowerText.includes("awareness") },
     ];
 
-    const missing = checks.filter((c) => !c.found).map((c) => c.term);
-    const found = checks.filter((c) => c.found).map((c) => c.term);
+    const missing = checks.filter(c => !c.found).map(c => c.term);
+    const found = checks.filter(c => c.found).map(c => c.term);
 
     setAnalysis(`
       Found controls: ${found.length > 0 ? found.join(", ") : "None"}
@@ -147,7 +142,8 @@ export default function Dashboard() {
     if (error) {
       alert("Delete failed: " + error.message);
     } else {
-      fetchFiles(user!.id);
+      setFiles(prev => prev.filter(f => f.name !== fileName));
+      setUploadCount(prev => Math.max(0, prev - 1));
     }
   };
 
@@ -158,18 +154,14 @@ export default function Dashboard() {
 
   if (!user) return null;
 
-  const remainingUploads = maxFreeUploads - uploadCount;
+  const remainingUploads = maxFreeUploads - files.length;
 
   return (
     <div className="min-h-screen bg-gray-900 p-8">
       <div className="max-w-5xl mx-auto">
         <div className="flex justify-between items-center mb-10">
           <h1 className="text-3xl font-bold text-cyan-500">SecureAudit Dashboard</h1>
-          <Button
-            onClick={handleSignOut}
-            variant="outline"
-            className="border-red-500 text-red-500 hover:bg-red-500 hover:text-white"
-          >
+          <Button onClick={handleSignOut} variant="outline" className="border-red-500 text-red-500 hover:bg-red-500 hover:text-white">
             Sign Out
           </Button>
         </div>
@@ -181,7 +173,7 @@ export default function Dashboard() {
 
           <div className="mt-6">
             <p className="text-lg text-gray-300 mb-4">
-              Free plan: <span className="font-bold text-cyan-400">{remainingUploads}</span> uploads remaining
+              Free plan: <span className="font-bold text-cyan-400">{remainingUploads}</span> uploads remaining (max 3)
             </p>
 
             <label className="block">
@@ -198,7 +190,6 @@ export default function Dashboard() {
           </div>
         </Card>
 
-        {/* Rest of the component (analysis, history) stays the same as before */}
         {analysis && (
           <Card className="p-8 bg-gray-800 border-gray-700 mb-8">
             <h3 className="text-2xl font-bold mb-6 text-cyan-400">Compliance Gap Analysis</h3>
@@ -211,29 +202,16 @@ export default function Dashboard() {
             <h3 className="text-2xl font-bold mb-6 text-cyan-400">Upload History</h3>
             <div className="space-y-4">
               {files.map((file) => (
-                <div
-                  key={file.name}
-                  className="flex items-center justify-between bg-gray-900 p-4 rounded-lg border border-gray-700"
-                >
+                <div key={file.name} className="flex items-center justify-between bg-gray-900 p-4 rounded-lg border border-gray-700">
                   <div>
                     <p className="text-white font-medium">{file.name}</p>
-                    <p className="text-gray-500 text-sm">
-                      Uploaded {new Date(file.created_at).toLocaleDateString()}
-                    </p>
+                    <p className="text-gray-500 text-sm">Uploaded {new Date(file.created_at).toLocaleDateString()}</p>
                   </div>
                   <div className="flex gap-3">
-                    <Button
-                      onClick={() => downloadFile(file.name)}
-                      variant="outline"
-                      className="border-cyan-500 text-cyan-500 hover:bg-cyan-500 hover:text-gray-900"
-                    >
+                    <Button onClick={() => downloadFile(file.name)} variant="outline" className="border-cyan-500 text-cyan-500 hover:bg-cyan-500 hover:text-gray-900">
                       Download
                     </Button>
-                    <Button
-                      onClick={() => deleteFile(file.name)}
-                      variant="outline"
-                      className="border-red-500 text-red-500 hover:bg-red-500 hover:text-white"
-                    >
+                    <Button onClick={() => deleteFile(file.name)} variant="outline" className="border-red-500 text-red-500 hover:bg-red-500 hover:text-white">
                       Delete
                     </Button>
                   </div>
