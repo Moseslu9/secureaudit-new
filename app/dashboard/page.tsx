@@ -82,31 +82,52 @@ export default function Dashboard() {
     }
   };
 
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !user) return;
 
-    if (uploadCount >= maxFreeUploads) {
-      alert(`Free plan limit reached: ${maxFreeUploads} uploads lifetime. Upgrade to Pro for unlimited!`);
+    // Check current count before attempting upload
+    if (files.length >= maxFreeUploads) {
+      alert(`Free plan limit reached: ${maxFreeUploads} uploads. Upgrade to Pro for unlimited!`);
       return;
     }
 
     setUploading(true);
+
     const fileExt = file.name.split(".").pop() || "pdf";
     const fileName = `${Date.now()}.${fileExt}`;
 
-    const { error } = await supabase.storage
-      .from("policies")
-      .upload(`${user.id}/${fileName}`, file);
+    // Optimistic update: add placeholder file immediately
+    const optimisticFile = {
+      name: fileName,
+      created_at: new Date().toISOString(),
+      isOptimistic: true, // just for identification if needed
+    };
+    setFiles(prev => [optimisticFile, ...prev]);
 
-    if (error) {
-      alert("Upload failed: " + error.message);
-    } else {
-      await incrementPermanentCount(); // Only increases — permanent
-      await fetchFiles(user.id);
-      analyzeFile(file);
+    try {
+      const { error } = await supabase.storage
+        .from("policies")
+        .upload(`${user.id}/${fileName}`, file);
+
+      if (error) {
+        alert("Upload failed: " + error.message);
+        // Rollback optimistic update
+        setFiles(prev => prev.filter(f => f.name !== fileName));
+      } else {
+        // Upload succeeded → keep optimistic file and refetch real list
+        analyzeFile(file);
+        // Refetch to get accurate server state (including size, etc.)
+        await fetchFiles(user.id);
+      }
+    } catch (err) {
+      console.error("Upload error:", err);
+      alert("Upload error occurred");
+      // Rollback on any unexpected error
+      setFiles(prev => prev.filter(f => f.name !== fileName));
+    } finally {
+      setUploading(false);
     }
-    setUploading(false);
   };
 
   const analyzeFile = async (file: File) => {
@@ -263,6 +284,22 @@ export default function Dashboard() {
             {uploading && <p className="text-cyan-400 mt-4 text-lg">Uploading and analyzing...</p>}
           </div>
         </Card>
+
+        {remainingUploads <= 0 && (
+  <Card className="p-8 bg-gradient-to-r from-cyan-900 to-blue-900 border-cyan-500 border-2 mb-8">
+    <div className="text-center">
+      <h3 className="text-2xl font-bold text-white mb-4">
+        You've reached your free plan limit (3 uploads)
+      </h3>
+      <p className="text-cyan-200 mb-6">
+        Upgrade to Pro for unlimited uploads, advanced AI analysis, and exportable reports.
+      </p>
+      <Button asChild size="lg" className="bg-white text-cyan-900 hover:bg-gray-100 font-bold">
+        <Link href="/pricing">Upgrade to Pro — $49/month</Link>
+      </Button>
+    </div>
+  </Card>
+)}
 
         {analysis && (
           <Card className="p-8 bg-gray-800 border-gray-700 mb-8">
