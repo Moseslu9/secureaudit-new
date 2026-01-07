@@ -12,71 +12,87 @@ export default function Dashboard() {
   const [files, setFiles] = useState<any[]>([]);
   const [uploading, setUploading] = useState(false);
   const [analysis, setAnalysis] = useState<string>("");
+  const [uploadCount, setUploadCount] = useState<number>(0); // Permanent count
+  const [region, setRegion] = useState("global");
   const maxFreeUploads = 3;
 
   useEffect(() => {
-    const getUserAndData = async () => {
+    const loadData = async () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
         router.push("/auth");
         return;
       }
       setUser(user);
-      await loadEverything(user.id);
+      await Promise.all([
+        fetchFiles(user.id),
+        fetchPermanentCount(user.id)
+      ]);
     };
-    getUserAndData();
+    loadData();
   }, [router]);
-
-  const loadEverything = async (userId: string) => {
-    await Promise.all([
-      fetchFiles(userId),
-      fetchUploadCount(userId)
-    ]);
-  };
 
   const fetchFiles = async (userId: string) => {
     const { data, error } = await supabase.storage
       .from("policies")
-      .list(userId);
+      .list(userId, {
+        limit: 100,
+        offset: 0,
+        sortBy: { column: "created_at", order: "desc" },
+      });
 
     if (error) {
       console.error("Error fetching files:", error);
+      setFiles([]);
     } else {
       setFiles(data || []);
     }
   };
 
-  const fetchUploadCount = async (userId: string) => {
-    const { count, error } = await supabase
+  const fetchPermanentCount = async (userId: string) => {
+    const { data, error } = await supabase
       .from("user_upload_count")
-      .select("*", { count: "exact", head: true })
-      .eq("user_id", userId);
+      .select("count")
+      .eq("user_id", userId)
+      .maybeSingle();
 
-    if (error) {
-      console.error("Error counting uploads:", error);
+    if (error && error.code !== "PGRST116") {
+      console.error("Error fetching count:", error);
+      setUploadCount(0);
       return;
     }
 
-    const currentCount = count || 0;
-    if (currentCount === 0) {
-      // Create row if not exists
-      await supabase.from("user_upload_count").insert({ user_id: userId });
+    if (data) {
+      setUploadCount(data.count);
+    } else {
+      // Create row for new user
+      await supabase.from("user_upload_count").insert({ user_id: userId, count: 0 });
+      setUploadCount(0);
     }
-    setUploadCount(currentCount);
+  };
+
+  const incrementPermanentCount = async () => {
+    const newCount = uploadCount + 1;
+    const { error } = await supabase
+      .from("user_upload_count")
+      .upsert({ user_id: user!.id, count: newCount }, { onConflict: "user_id" });
+
+    if (!error) {
+      setUploadCount(newCount);
+    }
   };
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !user) return;
 
-    const currentCount = files.length;
-    if (currentCount >= maxFreeUploads) {
-      alert(`Free plan limit reached: ${maxFreeUploads} uploads. Upgrade to Pro for unlimited!`);
+    if (uploadCount >= maxFreeUploads) {
+      alert(`Free plan limit reached: ${maxFreeUploads} uploads lifetime. Upgrade to Pro for unlimited!`);
       return;
     }
 
     setUploading(true);
-    const fileExt = file.name.split(".").pop();
+    const fileExt = file.name.split(".").pop() || "pdf";
     const fileName = `${Date.now()}.${fileExt}`;
 
     const { error } = await supabase.storage
@@ -86,9 +102,8 @@ export default function Dashboard() {
     if (error) {
       alert("Upload failed: " + error.message);
     } else {
-      // Optimistically update
-      setFiles(prev => [ { name: fileName, created_at: new Date().toISOString() }, ...prev ]);
-      setUploadCount(prev => prev + 1);
+      await incrementPermanentCount(); // Only increases — permanent
+      await fetchFiles(user.id);
       analyzeFile(file);
     }
     setUploading(false);
@@ -98,7 +113,7 @@ export default function Dashboard() {
     const text = await file.text();
     const lowerText = text.toLowerCase();
 
-    const checks = [
+    const generalChecks = [
       { term: "access control", found: lowerText.includes("access control") },
       { term: "encryption", found: lowerText.includes("encryption") },
       { term: "incident response", found: lowerText.includes("incident response") },
@@ -106,12 +121,51 @@ export default function Dashboard() {
       { term: "employee training", found: lowerText.includes("training") || lowerText.includes("awareness") },
     ];
 
-    const missing = checks.filter(c => !c.found).map(c => c.term);
-    const found = checks.filter(c => c.found).map(c => c.term);
+    let specificChecks = [];
+    if (region === "uganda") {
+      specificChecks = [
+        { term: "data minimization", found: lowerText.includes("data minimization") },
+        { term: "breach notification", found: lowerText.includes("breach notification") },
+        { term: "consent", found: lowerText.includes("consent") },
+      ];
+    } else if (region === "kenya") {
+      specificChecks = [
+        { term: "data impact assessment", found: lowerText.includes("data impact assessment") },
+        { term: "lawful processing", found: lowerText.includes("lawful processing") },
+      ];
+    } else if (region === "nigeria") {
+      specificChecks = [
+        { term: "consent management", found: lowerText.includes("consent management") },
+        { term: "data localization", found: lowerText.includes("data localization") },
+      ];
+    } else if (region === "south-africa") {
+      specificChecks = [
+        { term: "cross-border transfers", found: lowerText.includes("cross-border transfers") },
+        { term: "information officer", found: lowerText.includes("information officer") },
+      ];
+    } else if (region === "africa-general") {
+      specificChecks = [
+        { term: "cybersecurity framework", found: lowerText.includes("cybersecurity") },
+        { term: "personal data protection", found: lowerText.includes("personal data protection") },
+      ];
+    } else {
+      specificChecks = generalChecks;
+    }
+
+    const generalMissing = generalChecks.filter(c => !c.found).map(c => c.term);
+    const generalFound = generalChecks.filter(c => c.found).map(c => c.term);
+
+    const specificMissing = specificChecks.filter(c => !c.found).map(c => c.term);
+    const specificFound = specificChecks.filter(c => c.found).map(c => c.term);
 
     setAnalysis(`
-      Found controls: ${found.length > 0 ? found.join(", ") : "None"}
-      Missing key controls: ${missing.length > 0 ? missing.join(", ") : "None found!"}
+      General Controls (SOC 2/ISO):
+      Found: ${generalFound.length > 0 ? generalFound.join(", ") : "None"}
+      Missing: ${generalMissing.length > 0 ? generalMissing.join(", ") : "None found!"}
+
+      ${region === "global" ? "Global" : region.charAt(0).toUpperCase() + region.slice(1)} Specific Controls:
+      Found: ${specificFound.length > 0 ? specificFound.join(", ") : "None"}
+      Missing: ${specificMissing.length > 0 ? specificMissing.join(", ") : "None found!"}
     `);
   };
 
@@ -142,8 +196,8 @@ export default function Dashboard() {
     if (error) {
       alert("Delete failed: " + error.message);
     } else {
-      setFiles(prev => prev.filter(f => f.name !== fileName));
-      setUploadCount(prev => Math.max(0, prev - 1));
+      await fetchFiles(user!.id);
+      // Count does NOT decrease — lifetime limit stays
     }
   };
 
@@ -154,14 +208,18 @@ export default function Dashboard() {
 
   if (!user) return null;
 
-  const remainingUploads = maxFreeUploads - files.length;
+  const remainingUploads = maxFreeUploads - uploadCount;
 
   return (
     <div className="min-h-screen bg-gray-900 p-8">
       <div className="max-w-5xl mx-auto">
         <div className="flex justify-between items-center mb-10">
           <h1 className="text-3xl font-bold text-cyan-500">SecureAudit Dashboard</h1>
-          <Button onClick={handleSignOut} variant="outline" className="border-red-500 text-red-500 hover:bg-red-500 hover:text-white">
+          <Button
+            onClick={handleSignOut}
+            variant="outline"
+            className="border-red-500 text-red-500 hover:bg-red-500 hover:text-white"
+          >
             Sign Out
           </Button>
         </div>
@@ -173,8 +231,24 @@ export default function Dashboard() {
 
           <div className="mt-6">
             <p className="text-lg text-gray-300 mb-4">
-              Free plan: <span className="font-bold text-cyan-400">{remainingUploads}</span> uploads remaining (max 3)
+              Free plan: <span className="font-bold text-cyan-400">{remainingUploads}</span> uploads remaining (lifetime max 3)
             </p>
+
+            <label className="block mb-4">
+              <span className="text-white mb-2 block text-lg">Select Region for Analysis</span>
+              <select
+                value={region}
+                onChange={(e) => setRegion(e.target.value)}
+                className="block w-full bg-gray-700 border-gray-600 p-3 rounded-lg text-white"
+              >
+                <option value="global">Global (SOC 2/ISO)</option>
+                <option value="uganda">Uganda (DPPA)</option>
+                <option value="kenya">Kenya (DPA)</option>
+                <option value="nigeria">Nigeria (NDPR)</option>
+                <option value="south-africa">South Africa (POPIA)</option>
+                <option value="africa-general">Africa General (Malabo Convention)</option>
+              </select>
+            </label>
 
             <label className="block">
               <span className="text-white mb-2 block text-lg">Upload Policy Document</span>
@@ -202,16 +276,29 @@ export default function Dashboard() {
             <h3 className="text-2xl font-bold mb-6 text-cyan-400">Upload History</h3>
             <div className="space-y-4">
               {files.map((file) => (
-                <div key={file.name} className="flex items-center justify-between bg-gray-900 p-4 rounded-lg border border-gray-700">
+                <div
+                  key={file.name}
+                  className="flex items-center justify-between bg-gray-900 p-4 rounded-lg border border-gray-700"
+                >
                   <div>
                     <p className="text-white font-medium">{file.name}</p>
-                    <p className="text-gray-500 text-sm">Uploaded {new Date(file.created_at).toLocaleDateString()}</p>
+                    <p className="text-gray-500 text-sm">
+                      Uploaded {new Date(file.created_at).toLocaleDateString()}
+                    </p>
                   </div>
                   <div className="flex gap-3">
-                    <Button onClick={() => downloadFile(file.name)} variant="outline" className="border-cyan-500 text-cyan-500 hover:bg-cyan-500 hover:text-gray-900">
+                    <Button
+                      onClick={() => downloadFile(file.name)}
+                      variant="outline"
+                      className="border-cyan-500 text-cyan-500 hover:bg-cyan-500 hover:text-gray-900"
+                    >
                       Download
                     </Button>
-                    <Button onClick={() => deleteFile(file.name)} variant="outline" className="border-red-500 text-red-500 hover:bg-red-500 hover:text-white">
+                    <Button
+                      onClick={() => deleteFile(file.name)}
+                      variant="outline"
+                      className="border-red-500 text-red-500 hover:bg-red-500 hover:text-white"
+                    >
                       Delete
                     </Button>
                   </div>
