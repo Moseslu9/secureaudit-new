@@ -5,6 +5,9 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import Link from "next/link";
+import { PDFDownloadLink } from "@react-pdf/renderer";
+import { ComplianceReport } from "@/components/ComplianceReport";
 
 export default function Dashboard() {
   const router = useRouter();
@@ -12,24 +15,20 @@ export default function Dashboard() {
   const [files, setFiles] = useState<any[]>([]);
   const [uploading, setUploading] = useState(false);
   const [analysis, setAnalysis] = useState<string>("");
-  const [uploadCount, setUploadCount] = useState<number>(0); // Permanent count
   const [region, setRegion] = useState("global");
   const maxFreeUploads = 3;
 
   useEffect(() => {
-    const loadData = async () => {
+    const getUserAndFiles = async () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
         router.push("/auth");
         return;
       }
       setUser(user);
-      await Promise.all([
-        fetchFiles(user.id),
-        fetchPermanentCount(user.id)
-      ]);
+      await fetchFiles(user.id);
     };
-    loadData();
+    getUserAndFiles();
   }, [router]);
 
   const fetchFiles = async (userId: string) => {
@@ -49,145 +48,92 @@ export default function Dashboard() {
     }
   };
 
-  const fetchPermanentCount = async (userId: string) => {
-    const { data, error } = await supabase
-      .from("user_upload_count")
-      .select("count")
-      .eq("user_id", userId)
-      .maybeSingle();
-
-    if (error && error.code !== "PGRST116") {
-      console.error("Error fetching count:", error);
-      setUploadCount(0);
-      return;
-    }
-
-    if (data) {
-      setUploadCount(data.count);
-    } else {
-      // Create row for new user
-      await supabase.from("user_upload_count").insert({ user_id: userId, count: 0 });
-      setUploadCount(0);
-    }
-  };
-
-  const incrementPermanentCount = async () => {
-    const newCount = uploadCount + 1;
-    const { error } = await supabase
-      .from("user_upload_count")
-      .upsert({ user_id: user!.id, count: newCount }, { onConflict: "user_id" });
-
-    if (!error) {
-      setUploadCount(newCount);
-    }
-  };
-
-    const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !user) return;
 
-    // Check current count before attempting upload
     if (files.length >= maxFreeUploads) {
       alert(`Free plan limit reached: ${maxFreeUploads} uploads. Upgrade to Pro for unlimited!`);
       return;
     }
 
     setUploading(true);
-
     const fileExt = file.name.split(".").pop() || "pdf";
     const fileName = `${Date.now()}.${fileExt}`;
 
-    // Optimistic update: add placeholder file immediately
-    const optimisticFile = {
-      name: fileName,
-      created_at: new Date().toISOString(),
-      isOptimistic: true, // just for identification if needed
-    };
-    setFiles(prev => [optimisticFile, ...prev]);
+    const { error } = await supabase.storage
+      .from("policies")
+      .upload(`${user.id}/${fileName}`, file);
 
-    try {
-      const { error } = await supabase.storage
-        .from("policies")
-        .upload(`${user.id}/${fileName}`, file);
-
-      if (error) {
-        alert("Upload failed: " + error.message);
-        // Rollback optimistic update
-        setFiles(prev => prev.filter(f => f.name !== fileName));
-      } else {
-        // Upload succeeded → keep optimistic file and refetch real list
-        analyzeFile(file);
-        // Refetch to get accurate server state (including size, etc.)
-        await fetchFiles(user.id);
-      }
-    } catch (err) {
-      console.error("Upload error:", err);
-      alert("Upload error occurred");
-      // Rollback on any unexpected error
-      setFiles(prev => prev.filter(f => f.name !== fileName));
-    } finally {
-      setUploading(false);
+    if (error) {
+      alert("Upload failed: " + error.message);
+    } else {
+      const optimisticFile = { name: fileName, created_at: new Date().toISOString() };
+      setFiles([optimisticFile, ...files]);
+      analyzeFile(file);
     }
+    setUploading(false);
   };
 
-  const analyzeFile = async (file: File) => {
-    const text = await file.text();
-    const lowerText = text.toLowerCase();
+    const analyzeFile = async (file: File) => {
+   let text = await file.text();
 
-    const generalChecks = [
-      { term: "access control", found: lowerText.includes("access control") },
-      { term: "encryption", found: lowerText.includes("encryption") },
-      { term: "incident response", found: lowerText.includes("incident response") },
-      { term: "risk assessment", found: lowerText.includes("risk assessment") },
-      { term: "employee training", found: lowerText.includes("training") || lowerText.includes("awareness") },
-    ];
+  // Clean the text for accurate character count
+  const cleanedText = text.replace(/\s+/g, ' ').trim();
 
-    let specificChecks = [];
-    if (region === "uganda") {
-      specificChecks = [
-        { term: "data minimization", found: lowerText.includes("data minimization") },
-        { term: "breach notification", found: lowerText.includes("breach notification") },
-        { term: "consent", found: lowerText.includes("consent") },
-      ];
-    } else if (region === "kenya") {
-      specificChecks = [
-        { term: "data impact assessment", found: lowerText.includes("data impact assessment") },
-        { term: "lawful processing", found: lowerText.includes("lawful processing") },
-      ];
-    } else if (region === "nigeria") {
-      specificChecks = [
-        { term: "consent management", found: lowerText.includes("consent management") },
-        { term: "data localization", found: lowerText.includes("data localization") },
-      ];
-    } else if (region === "south-africa") {
-      specificChecks = [
-        { term: "cross-border transfers", found: lowerText.includes("cross-border transfers") },
-        { term: "information officer", found: lowerText.includes("information officer") },
-      ];
-    } else if (region === "africa-general") {
-      specificChecks = [
-        { term: "cybersecurity framework", found: lowerText.includes("cybersecurity") },
-        { term: "personal data protection", found: lowerText.includes("personal data protection") },
-      ];
-    } else {
-      specificChecks = generalChecks;
+  if (cleanedText.length > 20000) {
+    setAnalysis(
+      "Your document is too long for analysis (over 20,000 characters after cleaning).\n\n" +
+      "Please upload a shorter policy or split it into sections.\n\n" +
+      "Pro users can analyze longer documents — upgrade for unlimited access."
+    );
+    return;
+  }
+
+    setAnalysis("Analyzing your policy with AI...");
+
+    try {
+      const response = await fetch("https://api.x.ai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${process.env.GROK_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: "grok-beta",
+          messages: [
+            {
+              role: "system",
+              content: `You are a compliance expert specializing in data protection and cybersecurity for African businesses.
+Analyze the uploaded policy document and provide:
+1. Overall compliance score (0-100)
+2. Key strengths
+3. Critical gaps (especially for Uganda DPPA, Kenya DPA, Nigeria NDPR, South Africa POPIA, or global standards)
+4. Recommendations
+Keep response concise and professional.`
+            },
+            {
+              role: "user",
+              content: `Region: ${region === "global" ? "Global (SOC 2/ISO)" : region.toUpperCase()}\n\nDocument text:\n${text.substring(0, 18000)}`
+            }
+          ],
+          temperature: 0.3,
+          max_tokens: 1000
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error("AI analysis failed");
+      }
+
+      const data = await response.json();
+      const aiResponse = data.choices[0].message.content;
+
+      setAnalysis(aiResponse);
+    } catch (err) {
+      setAnalysis("AI analysis temporarily unavailable. Please try again later.");
+      console.error(err);
     }
-
-    const generalMissing = generalChecks.filter(c => !c.found).map(c => c.term);
-    const generalFound = generalChecks.filter(c => c.found).map(c => c.term);
-
-    const specificMissing = specificChecks.filter(c => !c.found).map(c => c.term);
-    const specificFound = specificChecks.filter(c => c.found).map(c => c.term);
-
-    setAnalysis(`
-      General Controls (SOC 2/ISO):
-      Found: ${generalFound.length > 0 ? generalFound.join(", ") : "None"}
-      Missing: ${generalMissing.length > 0 ? generalMissing.join(", ") : "None found!"}
-
-      ${region === "global" ? "Global" : region.charAt(0).toUpperCase() + region.slice(1)} Specific Controls:
-      Found: ${specificFound.length > 0 ? specificFound.join(", ") : "None"}
-      Missing: ${specificMissing.length > 0 ? specificMissing.join(", ") : "None found!"}
-    `);
   };
 
   const downloadFile = async (fileName: string) => {
@@ -217,8 +163,7 @@ export default function Dashboard() {
     if (error) {
       alert("Delete failed: " + error.message);
     } else {
-      await fetchFiles(user!.id);
-      // Count does NOT decrease — lifetime limit stays
+      setFiles(files.filter(f => f.name !== fileName));
     }
   };
 
@@ -229,7 +174,7 @@ export default function Dashboard() {
 
   if (!user) return null;
 
-  const remainingUploads = maxFreeUploads - uploadCount;
+  const remainingUploads = maxFreeUploads - files.length;
 
   return (
     <div className="min-h-screen bg-gray-900 p-8">
@@ -252,7 +197,7 @@ export default function Dashboard() {
 
           <div className="mt-6">
             <p className="text-lg text-gray-300 mb-4">
-              Free plan: <span className="font-bold text-cyan-400">{remainingUploads}</span> uploads remaining (lifetime max 3)
+              Free plan: <span className="font-bold text-cyan-400">{remainingUploads}</span> uploads remaining (max 3)
             </p>
 
             <label className="block mb-4">
@@ -286,24 +231,36 @@ export default function Dashboard() {
         </Card>
 
         {remainingUploads <= 0 && (
-  <Card className="p-8 bg-gradient-to-r from-cyan-900 to-blue-900 border-cyan-500 border-2 mb-8">
-    <div className="text-center">
-      <h3 className="text-2xl font-bold text-white mb-4">
-        You've reached your free plan limit (3 uploads)
-      </h3>
-      <p className="text-cyan-200 mb-6">
-        Upgrade to Pro for unlimited uploads, advanced AI analysis, and exportable reports.
-      </p>
-      <Button asChild size="lg" className="bg-white text-cyan-900 hover:bg-gray-100 font-bold">
-        <Link href="/pricing">Upgrade to Pro — $49/month</Link>
-      </Button>
-    </div>
-  </Card>
-)}
+          <Card className="p-8 bg-gradient-to-r from-cyan-900 to-blue-900 border-cyan-500 border-2 mb-8">
+            <div className="text-center">
+              <h3 className="text-2xl font-bold text-white mb-4">
+                You've reached your free plan limit (3 uploads)
+              </h3>
+              <p className="text-cyan-200 mb-6">
+                Upgrade to Pro for unlimited uploads, advanced AI analysis, and exportable reports.
+              </p>
+              <Button asChild size="lg" className="bg-white text-cyan-900 hover:bg-gray-100 font-bold">
+                <Link href="/pricing">Upgrade to Pro — $49/month</Link>
+              </Button>
+            </div>
+          </Card>
+        )}
 
         {analysis && (
           <Card className="p-8 bg-gray-800 border-gray-700 mb-8">
-            <h3 className="text-2xl font-bold mb-6 text-cyan-400">Compliance Gap Analysis</h3>
+            <div className="flex justify-between items-start mb-6">
+              <h3 className="text-2xl font-bold text-cyan-400">Compliance Gap Analysis</h3>
+              <PDFDownloadLink
+                document={<ComplianceReport analysis={analysis} email={user.email} region={region} />}
+                fileName="SecureAudit-Compliance-Report.pdf"
+              >
+                {({ loading }) => (
+                  <Button variant="outline" className="border-cyan-500 text-cyan-500 hover:bg-cyan-500 hover:text-gray-900">
+                    {loading ? "Generating..." : "Export PDF"}
+                  </Button>
+                )}
+              </PDFDownloadLink>
+            </div>
             <p className="text-gray-300 text-lg whitespace-pre-wrap leading-relaxed">{analysis}</p>
           </Card>
         )}
